@@ -1,12 +1,12 @@
 Manuscript Title: Per capita sperm metabolism is density-dependent
 Authors: Ashley Potter, Craig White, Dustin Marshall
-Date updated: Tue 28 February 2023
+Date updated: Sun 12 January 2025
 
 This file contains information for all the datasets in the manuscript and can be used with 'RDE-Data-Accessibility.Rmd' and 'Supplemental_24_02.docx'
 
 NOTE: For all datasets, NA's indicate no data in the cell
 
-## Please contact Ashley Potter if there are any other questions or concerns ashley.ashpot.potter (at) gmail.com
+## Please contact Ashley Potter if there are any other questions or concerns aepotter84 (at) gmail.com
 
 # Title of Dataset1: Density-dependent sperm metabolism
 
