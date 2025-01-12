@@ -1,0 +1,1134 @@
+---
+title: "Per capita sperm metabolism is density-dependent"
+author: "Ashley Potter"
+updated: "2023-27-02"
+
+---
+
+1) Main text analyses
+2) Main text tables and plots
+3) Supplemental analyses
+4) Supplemental tables and plots
+
+```{r}
+mrdata2 <- mrdata %>% 
+  dplyr::select(Species, Sugar, Carbs, Diluent_cat2)
+
+merged <- merge(unique(mrdata_new), unique(mrdata2), by = c("Species", "Diluent_cat2"), all.x = TRUE)
+
+merged <- merged %>% 
+  dplyr::distinct(Species, LNMR, .keep_all = TRUE)
+
+merged <- merged %>%
+  group_by(Diluent_cat2) %>%
+  fill(c("Sugar", "Carbs"), .direction = "downup")
+
+mrdata <- mrdata %>% 
+  dplyr::select(-X)
+
+
+write_csv(mrdata, "../Data/RDE_data_updated.csv")
+  
+```
+
+
+
+
+# Loading packages
+```{r}
+
+library(maps)
+library(ape) ##tree manipulations
+library(phyr) ##mixed model package
+library(phytools) ##tree manipulations
+library(rotl) ##interfaces with open tree of life, builds trees
+library(tidyverse) #wrangle data
+library(phytools) #making phylo tree
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(lme4)
+library(lmerTest)
+library(car)
+library(lattice)
+library(latticeExtra)
+library(Matrix)
+library(viridisLite)
+library(viridis)
+library(extrafont)
+library(visreg)
+library(gridExtra)
+library("png")
+library(grid)
+library(cowplot)
+library(caper) # v. 1.0.1
+library(progress) # v. 1.2.2
+library(nlme) # v. 3.1-152
+library(lemon) # v. 0.4.5
+library(gghalves) # v. 0.1.1
+
+```
+
+
+RDE_data.csv METADATA
+
+Column names and descriptions
+- Phyla
+- Class
+- Order
+- Family
+- Species
+- MR: actual metabolic rate (microliters O2 per conc per hour) that was measured using the actual sperm concentration
+- Conc_MR: actual sperm concentration (sperm per ml) that was used when metabolism was measured
+- Diluent: Diluent used to dilute sperm to a known concentration
+- Diluent_job: The job of the diluent. Used for sperm activation or extending sperm
+- Extraction: Method of sperm extraction (ejaculated, extracted from the male or extracted from the female (stored))
+- Sperm_MR_Note: Was sperm transformed or was there no transformation needed
+- reference_MR: reference used to extract sperm metabolism data
+- Analysis: Was the reference and data included in the final analysis (yes/no)?
+- Fresh_Frozen: Sperm handling method. Was MR measured on fresh, frozen-thawed or cooled sperm?
+- Endotherm_Ectotherm: Classified species as Endotherm or Ectotherm
+- Internal_External: Classified species as Internal or External
+- Sample_size: Number of samples taken in each reference
+
+
+
+# Loading csv file and formatting data
+```{r}
+
+##original data set
+rm(list = ls())
+
+mrdata <- read.csv("../Data/RDE_data.csv")
+
+
+# Calculating per capita sperm metabolic rate (MR/Conc)
+mrdata$percap <- mrdata$MR/mrdata$Conc_MR
+
+
+# Natural log transform MR and Concentration
+mrdata$LNMR <- log(mrdata$MR) # natural log whole ejaculate metabolic rate
+mrdata$LNConc <- log(mrdata$Conc_MR) # natural log sperm concentration
+mrdata$LNpercap <-log(mrdata$percap) # natural log per capita metabolic rate
+mrdata$logMR <- log10(mrdata$MR) # natural log whole ejaculate metabolic rate
+mrdata$logConc <- log10(mrdata$Conc_MR) # natural log sperm concentration
+mrdata$logpercap <-log10(mrdata$percap) # natural log per capita metabolic rate
+
+
+```
+
+
+#MAIN TEXT
+
+# Creating the Phylogenetic Tree and Covariance Matrix (open tree of life)
+```{r}
+
+mrdata2 <- mrdata
+
+#### TAXONOMY AND PHYLOGENTIC TREE ####
+
+#Download the taxonomy database and tree using rotl
+
+##take list of species and give taxonomy and unique ID; Context "animals" ensures 
+# that we're not including any species with genera that match names for plants:
+mrdata2$Species <- as.factor(mrdata2$Species)
+
+mrdata2 <- mrdata2[!mrdata2$Endotherm_Ectotherm == "", ] # eliminates specific levels
+
+taxonomy <- tnrs_match_names(mrdata2$Species, context_name = "Animals")
+##returns species it could not find; need to resolve/remove species that are not matched 
+# some just don't exist in the ROTL database, others are rejected because they are not specific enough 
+# - (e.g., "... sp.", "sp")
+
+# the warning message may be truncated. You want to know exactly which species are not resolved,
+# - so use this code to print out a longer error message
+
+#stop(paste(rep(letters, 50L), collapse = ''))
+#options(warning.length = 2000L)
+#stop(paste(rep(letters, 50L), collapse = ''))
+
+# rerun code for taxonomy with ROTL
+
+#taxonomy <- tnrs_match_names(levels(original$Species), context_name = "Animals")
+
+# looks like there are none that are unmatched??? So let's proceed
+
+mrdata2$Species<-as.character(mrdata2$Species)
+
+# reordering species list alphabetically (note that any species with spaces before the name will appear first in the list alphabetically)
+
+#original_1<- original %>% arrange(Species)
+
+#original_1$Species<- as.factor(original_1$Species)
+
+# yay! no more error messages. 
+
+# I looked at the species in several ways
+
+# 1) see if you can resolve to species level (e.g., sp. spp. genus ____)
+# 2) see if removing a duplicated species name in the name (e.g., Mungos mungo taenianotus = Mungos taenianotus instead?)
+# 3) make sure the names are not outdated synonyms (though you already did a good job of this)
+
+# If a species has been newly discovered (within the past few years), it's unlikely to be in the open tree of life database. If you really want to bring that species into the analysis,
+# - consider going with a closely-related species (congener)
+
+# How much you want to infer is entirely up to you. I only inferred species if I had them identified to genus or family, and even then I based it off of another species that I already 
+# - had in my database with similar attributes (e.g., similar size, found in similar location, or at similar temperature)
+
+#######################################################################################################
+
+#look at taxonomy, it's a list of unique species names:
+# explanation of table: https://cran.r-project.org/web/packages/rotl/vignettes/rotl.html
+
+# search string is the original name from your database, unique name is the name that was assigned to the species if it was outdated or entered incorrectly
+
+head(taxonomy)
+
+View(taxonomy)
+
+##ott_ids is ID from taxonomy; label_format with name but could also do ids
+tree <- tol_induced_subtree(ott_ids = taxonomy$ott_id, label_format = "name")
+
+## it won't run--error message indicates there are NA's so we need to look at the dataset and see what's up
+## There is a row with only NA's and no other values so let's omit the row with NA's
+
+# Omitting NA values
+#taxonomy_1 <- na.omit(taxonomy)
+taxonomy_1 <- taxonomy
+##Attempting to run tree again
+tree <- tol_induced_subtree(ott_ids = taxonomy_1$ott_id, label_format = "name")
+
+# tree is made!!!
+# another error message, but this is okay, the tree is made!
+
+# check it out, can export this figure and zoom into the tree to see if the placement of species makes sense
+
+par(mfrow = c(1,1), mar = rep(0,4))
+plot(tree, cex = 0.5)
+
+## you can see there are some weird names that have parenthesis in the tree
+
+# let's see which ones they are
+
+View(taxonomy_1)
+
+# search for all species with a parenthesis or species in their name (n = 2)
+
+# names: 
+#	Apis mellifera (species in domain Eukaryota)
+# Oncorhynchus mykiss (species in domain Eukaryota)
+
+#Change names in base R (the tip labels are already character values, so this should work)
+tree$tip.label[tree$tip.label == "Oncorhynchus_mykiss_(species_in_domain_Eukaryota)"] <- "Oncorhynchus mykiss"
+tree$tip.label[tree$tip.label == "Apis_mellifera_(species_in_domain_Eukaryota)"] <- "Apis mellifera"
+
+plot(tree, cex = 0.5)
+
+#Replace species names in the data set with those identified in the taxonomy search
+mrdata2$matched.species <- NA
+for(i in 1:nrow(taxonomy_1)){##to lower changes my dataset to lower case to match taxonomy
+  mrdata2$matched.species[tolower(mrdata2$Species) == taxonomy_1$search_string[i]] <- taxonomy_1$unique_name[i]
+}
+mrdata2$matched.species <- gsub(" ", "_", mrdata2$matched.species)
+
+# renaming species in data set as well
+
+mrdata2$matched.species[mrdata2$matched.species == "Oncorhynchus_mykiss_(species_in_domain_Eukaryota)"] <- "Oncorhynchus mykiss"
+mrdata2$matched.species[mrdata2$matched.species == "Apis_mellifera_(species_in_domain_Eukaryota)"] <- "Apis mellifera"
+
+#Check for species that are in the data set, but not in the tree
+mrdata2[!mrdata2$matched.species %in% tree$tip.label,]
+#none, good to go
+
+#Check for species that are in the tree, but not in the data
+taxonomy_1$tip.label[!tree$tip.label %in% taxonomy_1$matched.species]
+#none, good to go
+
+##can also just take a look, make sure these are okay
+tip_labels <- data.frame(tree$tip.label)
+
+View(tip_labels)
+
+#Looks like we have 46 species in our tree, yeehaw!
+
+#trees from rotl do not have branch lengths, so create arbitrary branch lengths using Grafen's method 
+tree_1 <- compute.brlen(tree, method = "Grafen", power = 1)
+
+#Plot the tree, to check all is well
+plot(tree_1, cex = 0.5)
+
+#First, scale the tree to a height of 1
+tree_2 <- tree_1
+tree_2$edge.length<-tree_2$edge.length/max(nodeHeights(tree_2))
+
+tree_2
+
+
+
+###This will allow me to save the plot below as a pdf
+pdf("~/Desktop/R Studio/Output/SDE_PhyloTreeEcto.pdf",
+    width = 100, # The width of the plot in inches
+    height = 200) # The height of the plot in inches 
+
+plot(tree_2, cex = 0.5)
+
+dev.off() ##THis is necessary to finish off saving the plot as a pdf
+
+
+#Calculate the relationship matrix (A matrix) - variance covariance matrix
+phylo <- 1-(cophenetic(tree_2)/2)
+##same as vcv()
+
+phylo
+
+
+
+```
+
+# ANALYSES
+
+## Model selection - Metabolic rate ~ Sperm concentration * Thermoregulation (Endo or Ecto) + phylogeny  (random effects)
+```{r}
+# Testing two-way interaction between Conc and thermoregulation
+full_model <- phyr::pglmm(LNMR ~ 1
+                      + LNConc * Endotherm_Ectotherm
+                      + LNConc
+                      + Endotherm_Ectotherm
+                      + (1|matched.species__), # phylogeny
+                      cov_ranef = list(matched.species = phylo), 
+                      REML = TRUE, data = mrdata2)
+
+full_model # Interaction is minorly insignificant. Let's see what happens when I remove it and just look at main effects
+
+
+#logLik    AIC    BIC 
+#-269.0  554.0  572.9 
+
+#Random effects:
+
+#Fixed effects:
+#                                    Value  Std.Error   Zscore  Pvalue    
+#(Intercept)                    -11.135048   0.861791 -12.9208 < 2e-16 ***
+#LNConc                           0.680609   0.042355  16.0693 < 2e-16 ***
+#Endotherm_EctothermEndo         -1.188262   1.270319  -0.9354 0.34958    
+#LNConc:Endotherm_EctothermEndo   0.124017   0.065893   1.8821 0.05982 . 
+
+# Testing main effects only
+reduced_model <- phyr::pglmm(LNMR ~ 1
+                      + LNConc
+                      + Endotherm_Ectotherm
+                      + (1|matched.species__), 
+                      cov_ranef = list(matched.species = phylo), 
+                      REML = TRUE, data = mrdata2)
+
+
+reduced_model # Looks like both of my main effects are significant. Let's compare the two models using a loglikelihood test to see if removing the interaction improves the model fit.
+
+#logLik    AIC    BIC 
+#-272.0  557.9  574.5 
+
+#Random effects:
+
+#Fixed effects:
+#                            Value Std.Error  Zscore    Pvalue    
+#(Intercept)             -12.14981   0.67939 -17.883 < 2.2e-16 ***
+#LNConc                    0.73212   0.03264  22.430 < 2.2e-16 ***
+#Endotherm_EctothermEndo   1.14188   0.29475   3.874  0.000107 ***
+
+# Comparing 2 models - full and reduced model
+pchisq(-2*(reduced_model$logLik - full_model$logLik), df = 1, lower.tail = F) # p value
+-2*(reduced_model$logLik - full_model$logLik)
+
+#[1] 0.01477763 - p-value
+#[1] 5.942787 - Chi-squared
+
+# A significant p-value indicates that removing the interaction may have impact the fit of the model. The loglik and AIC values are more than 2 values different in favor of full model so we will keep the interaction in
+
+```
+# Comparing a phylogenetic model to a non-phyogenetic model
+```{r}
+
+phylo_model <- phyr::pglmm(LNMR ~ 1
+                      + LNConc
+                      + Endotherm_Ectotherm
+                      + (1|matched.species__), # phylo 
+                      cov_ranef = list(matched.species = phylo), 
+                      REML = TRUE, data = mrdata2)
+
+
+phylo_model
+
+nonphylo_model <- phyr::pglmm(LNMR ~ 1
+                      + LNConc
+                      + Endotherm_Ectotherm
+                      + (1|matched.species), # non-phylo
+                      cov_ranef = list(matched.species = phylo), 
+                      REML = TRUE, data = mrdata2)
+
+
+nonphylo_model
+
+# The estimates of models with and without phylo do not really change
+
+# Comparing 2 models - phylo and nonpylo model
+pchisq(-2*(nonphylo_model$logLik - phylo_model$logLik), df = 1, lower.tail = F) # p value
+-2*(nonphylo_model$logLik - phylo_model$logLik)
+
+#[1] 0.7783002 - p-value
+#[1] 0.07926188 - Chi-squared
+
+# No difference in model fit between phylo and non-phylo so we will stick to the simplest model which would be non-phylo or a linear mixed model with species as a random effect (see below)
+
+```
+
+# Calculating a Pagels lambda using a gls
+```{r}
+
+# Model with interaction
+a_mod <- gls(LNMR ~ LNConc + Endotherm_Ectotherm + LNConc * Endotherm_Ectotherm, 
+                data = subset(mrdata2), 
+                correlation = corPagel(1, tree_2, form = ~matched.species, fixed = FALSE),
+                method = "ML")
+
+anova(a_mod)
+
+#Denom. DF: 243 
+ #                          numDF  F-value p-value
+#(Intercept)                    1   3.1302  0.0781
+#LNConc                         1 701.9854  <.0001
+#Endotherm_Ectotherm            1   0.6159  0.4333
+#LNConc:Endotherm_Ectotherm     1   0.1568  0.6925
+
+
+summary(a_mod)
+
+#Generalized least squares fit by maximum likelihood
+ # Model: LNMR ~ LNConc + Endotherm_Ectotherm + LNConc * Endotherm_Ectotherm 
+  #Data: subset(mrdata2) 
+ #      AIC    BIC    logLik
+  #727.7636 748.82 -357.8818
+
+#Correlation Structure: corPagel
+# Formula: ~matched.species 
+# Parameter estimate(s):
+#   lambda 
+#0.9121808 
+
+#Coefficients:
+#                                    Value Std.Error   t-value p-value
+#(Intercept)                    -14.434653 1.7820905 -8.099843  0.0000
+#LNConc                           0.849843 0.0488464 17.398255  0.0000
+#Endotherm_EctothermEndo          0.799759 2.0865737  0.383288  0.7018
+#LNConc:Endotherm_EctothermEndo   0.025976 0.0656059  0.395947  0.6925
+
+ #Correlation: 
+#                               (Intr) LNConc End_EE
+#LNConc                         -0.545              
+#Endotherm_EctothermEndo        -0.379  0.460       
+#LNConc:Endotherm_EctothermEndo  0.406 -0.745 -0.607
+
+#Standardized residuals:
+ #      Min         Q1        Med         Q3        Max 
+#-1.2066872 -0.1811410  0.0753208  0.2630831  0.9425091 
+
+#Residual standard error: 2.884903 
+#Degrees of freedom: 247 total; 243 residual
+
+
+# Model with main effects only
+
+b_mod <- gls(LNMR ~ LNConc + Endotherm_Ectotherm, 
+                data = subset(mrdata2), 
+                correlation = corPagel(1, tree_2, form = ~matched.species, fixed = FALSE),
+                method = "ML")
+
+anova(b_mod)
+
+#Denom. DF: 244 
+ #                   numDF  F-value p-value
+#(Intercept)             1   3.0899  0.0800
+#LNConc                  1 704.2782  <.0001
+#Endotherm_Ectotherm     1   0.6079  0.4363
+
+summary(b_mod)
+
+#Generalized least squares fit by maximum likelihood
+#  Model: LNMR ~ LNConc + Endotherm_Ectotherm 
+  #Data: subset(mrdata2) 
+  #     AIC      BIC    logLik
+ # 725.9214 743.4684 -357.9607
+
+#Correlation Structure: corPagel
+# Formula: ~matched.species 
+ #Parameter estimate(s):
+#   lambda 
+#0.9137813 
+
+#Coefficients:
+#                             Value Std.Error   t-value p-value
+#(Intercept)             -14.720082 1.6376881 -8.988331  0.0000
+#LNConc                    0.864208 0.0325543 26.546620  0.0000
+#Endotherm_EctothermEndo   1.301650 1.6694909  0.779669  0.4363
+
+# Correlation: 
+ #                       (Intr) LNConc
+#LNConc                  -0.396       
+#Endotherm_EctothermEndo -0.182  0.014
+
+# Looks like 91% of the random variation is explained by phylogeny which means that we should use a phylogenetic model over a non-phylogenetic model. Notice that the estimates for the gls and pglmm are quantitatively similar but qualitatively, thermoregulation is non-significant. I think this is because I cannot include random effects in a gls.
+  
+# I will report the results from the pglmm phylogenetic model
+```
+# Predictions of the model
+```{r}
+
+# since we are including a insignificant interaction term in our model, we need to find the predicted relationship between MR and conc while accounting for the interaction and other main effect
+
+# removing rows with NA's
+mrdata3 <- mrdata2 %>%
+  dplyr::select(LNMR, LNConc, Endotherm_Ectotherm, matched.species)
+
+mrdata3 <- na.omit(mrdata3)
+
+reduced_model <- phyr::pglmm(LNMR ~ 1
+                      + LNConc * Endotherm_Ectotherm
+                      + LNConc
+                      + Endotherm_Ectotherm
+                      + (1|matched.species__), # phylogeny
+                      cov_ranef = list(matched.species = phylo), 
+                      REML = TRUE, data = mrdata3)
+
+reduced_model 
+
+#logLik    AIC    BIC 
+#-269.0  554.0  572.9 
+
+#Random effects:
+
+#Fixed effects:
+  #                                  Value  Std.Error   Zscore  Pvalue    
+#(Intercept)                    -11.135048   0.861791 -12.9208 < 2e-16 ***
+#LNConc                           0.680609   0.042355  16.0693 < 2e-16 ***
+#Endotherm_EctothermEndo         -1.188262   1.270319  -0.9354 0.34958    
+#LNConc:Endotherm_EctothermEndo   0.124017   0.065893   1.8821 0.05982 .
+
+# Calculating predictions based on estimates from the model
+predlong <- predict(reduced_model)
+
+# Adding predictions to dataset
+mrdata3 <- mrdata3%>%
+  add_column(pred_mixed = predlong)
+
+# Take predictions and regress against TSL only to find the scaling relationship
+prediction <- lm(pred_mixed ~ LNConc, data = mrdata3)
+
+summary(prediction)
+
+#Coefficients:
+#             Estimate Std. Error t value Pr(>|t|)    
+#(Intercept) -11.59475    0.50374  -23.02   <2e-16 ***
+#LNConc        0.74374    0.02619   28.40   <2e-16 ***
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#Residual standard error: 1.115 on 245 degrees of freedom
+#Multiple R-squared:  0.767,	Adjusted R-squared:  0.7661 
+#F-statistic: 806.7 on 1 and 245 DF,  p-value: < 2.2e-16
+
+prediction <- lm(pred_mixed ~ LNConc + Endotherm_Ectotherm, data = mrdata3)
+
+summary(prediction)
+
+#Coefficients:
+#                         Estimate Std. Error t value Pr(>|t|)    
+#(Intercept)             -12.79124    0.47520 -26.917  < 2e-16 ***
+#LNConc                    0.77649    0.02378  32.655  < 2e-16 ***
+#Endotherm_EctothermEndo   1.02503    0.12973   7.901 9.47e-14 ***
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#Residual standard error: 0.9969 on 244 degrees of freedom
+#Multiple R-squared:  0.8145,	Adjusted R-squared:  0.813 
+#F-statistic: 535.7 on 2 and 244 DF,  p-value: < 2.2e-16
+
+#Longevityplot <- 
+  mrdata3 %>%
+  ggplot(aes(x = LNConc, y = pred_mixed, color = Endotherm_Ectotherm)) + 
+  geom_smooth(method = "lm", lwd = 2.5, fill = "grey") +
+  #stat_function(fun = function(x) {1.6}, color = "black", lwd = 2, linetype = "dashed") +
+  geom_point(aes(x = LNConc, y = LNMR, color = Endotherm_Ectotherm), lwd = 2.5) +
+  #geom_jitter(aes(x = logMPV, y = predlong)) +
+  #stat_function(fun = function(x) {-1.7 + 0.9468085*x}, color = "#40B0A6", lwd = 2.5) +
+  #scale_color_manual(values = c("I" = "orange", "E" = "lightblue")) +
+  labs(y = expression(paste("LN Metabolic Rate ")), x = expression(paste("LN Conc " * ( mu*m^3)))) +
+  theme_bw() + # Adjusting background of plot
+  theme(
+        axis.title.y = element_text(size=18),
+        axis.title.x = element_text(size=18),
+        axis.text.x  = element_text(vjust=0.5, size=18, colour = "black"), 
+    axis.text.y  = element_text(vjust=0.5, size=18, colour = "black"),
+        legend.position = "blank",
+        legend.justification = c("right", "top"),
+        text=element_text(size=18),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 18),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        legend.box.just = "right") 
+
+
+```
+
+
+
+# TABLES AND FIGURES (MAIN TEXT)
+
+Table 1 | Linear mixed effects model for the relationship between aerobic metabolism, sperm concentration (density) and thermoregulation (endotherm and ectotherms).
+
+## Table 1: Final Model - linear mixed model with species as a random effect
+```{r}
+final_mod <- lmer(LNMR ~ 1 + 
+              LNConc 
+            + Endotherm_Ectotherm 
+            + (1|Species), 
+            data = mrdata)
+
+summary(final_mod)
+
+#Fixed effects:
+#                         Estimate Std. Error        df t value Pr(>|t|)    
+#(Intercept)             -14.54680    0.72891 185.16729 -19.957  < 2e-16 ***
+#LNConc                    0.84672    0.03558 199.48490  23.798  < 2e-16 ***
+#Endotherm_EctothermEndo   1.64600    0.35063  38.10257   4.694 3.42e-05 ***
+
+anova(final_mod, type = 3)
+
+#Type III Analysis of Variance Table with Satterthwaite's method
+#                     Sum Sq Mean Sq NumDF   DenDF F value    Pr(>F)    
+#LNConc              401.96  401.96     1 199.485 566.340 < 2.2e-16 ***
+#Endotherm_Ectotherm  15.64   15.64     1  38.103  22.037 3.415e-05 ***
+
+
+```
+
+Figure 1 | Theoretical model showing the density-dependence of total resource availability, per capita resources and per capita metabolic rate in sperm. 
+Figure 1 was a theoretical model with no actual data and was made in powerpoint, not R studio
+
+Figure 2 | Among-species Relationships between Sperm Concentration and Per capita and Ejaculate-level Metabolic Rate.
+
+## Figure 2A/B - Creating Figure (plots are in log base 10 because sperm concentration is easier to view (i.e., 6 = 10^6 sperm per ml))
+```{r}
+# Adding the estimates of the lines
+my_text = grobTree(textGrob(expression(paste("b = 0.85")), x=0.8,  y=0.5, hjust=0,
+  gp=gpar(col="black", fontsize=18)))
+
+my_text2 = grobTree(textGrob(expression(paste("b = -0.15")), x=0.8,  y=0.2, hjust=0,
+  gp=gpar(col="black", fontsize=18)))
+
+#Figure 2A - Per capita MR is on a raw scale to see the subtle decline in MR across density
+Inset <- 
+  mrdata %>%
+  ggplot(aes(x = logConc, y = percap, color = Endotherm_Ectotherm)) + 
+  geom_point(aes(shape = Endotherm_Ectotherm), size = 3.5) +
+  geom_hline(yintercept = 5E-7, linetype = "dashed", color = "darkgray", size = 2)  +
+  stat_function(fun = function(x) {0.000002 * exp(-0.359*x)}, color = "indianred", lwd = 2.5) +
+  stat_function(fun = function(x) {0.000001 * exp(-0.429*x)}, color = "steelblue3", lwd = 2.5) +
+  scale_color_manual(values = c("steelblue3", "indianred")) +
+  labs(y = expression(paste("Per capita metabolic rate " *(mu*l * " O"[2] * " spermatozoon"^{-1} * " h"^{-1})))) +
+  theme_bw() + # Adjusting background of plot
+  theme(
+        axis.title.y = element_text(size=18),
+        axis.title.x = element_blank(),
+        axis.text.x  = element_text(vjust=0.5, size=18, colour = "black"), 
+    axis.text.y  = element_text(vjust=0.5, size=18, colour = "black"),
+        legend.position = "blank",
+        legend.justification = c("right", "top"),
+        text=element_text(size=18),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 18),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        legend.box.just = "right") +
+  annotation_custom(my_text2) + 
+  xlim(4.5,10.2)
+
+# Figure 2B
+Aerobic <- 
+  mrdata %>%
+  ggplot(aes(x = log10(Conc_MR), y = log10(MR), color = Endotherm_Ectotherm)) +
+  stat_function(fun = function(x) {-6.3 + x}, color = "darkgrey", lwd = 2, linetype = "dashed", xlim=c(4.6,10.2)) +
+  geom_point(aes(shape = Endotherm_Ectotherm), size = 3) +
+  scale_color_manual(values = c("steelblue3", "indianred")) +
+  labs(x = expression(paste("Log"[10], " Sperm Concentration " *("sperm " * ml^{-1}))), y = expression(paste("Log"[10], " Ejaculate-level metabolic rate "  *(mu*l * " O"[2] * " h"^{-1})))) + 
+  geom_smooth(method = 'lm', se = FALSE, lwd = 2.5) +
+  theme_bw() + # Adjusting background of plot
+  theme(
+    axis.title.x = element_text(size=18), 
+    axis.title.y = element_text(size=18),
+    axis.text.x  = element_text(vjust=0.5, size=18, colour = "black"), 
+    axis.text.y  = element_text(vjust=0.5, size=18, colour = "black"),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    text=element_text(size=18),
+    axis.line = element_line(colour = "black"),
+    legend.position = "blank",
+    legend.title = element_blank()) + 
+    xlim(4.5,10.2) +
+  annotation_custom(my_text) 
+  
+
+```
+
+## Figure 2A/B - Stacking plots
+```{r}
+
+fig1 <- ggarrange(Inset,Aerobic, ncol = 1, align = "v") #http://www.sthda.com/english/articles/24-ggpubr-publication-ready-plots/81-ggplot2-easy-way-to-mix-multiple-graphs-on-the-same-page/
+  
+fig1   
+
+```
+## Figure 2A/B Saving Plot into PDF
+```{r}
+pdf("~/Desktop/R Studio/RDE Meta/Output/AerobicRDEPlot.pdf",
+    width = 10, # The width of the plot in inches
+    height = 14) # The height of the plot in inches
+
+fig1
+
+dev.off()
+```
+
+Figure 3 | Within-species Relationships between Sperm Concentration and Ejaculate-level Metabolic Rate. 
+
+# Figure 3A/B - Calculating model predictions and fitting a single slope to each species
+```{r}
+
+RepSpecies <- mrdata %>%
+  filter(Species %in% c("Meleagris gallopavo", "Gallus gallus ","Homo sapiens", "Ovis aries", "Ovis canadensis ", "Bos taurus", "Oryctolagus cuniculus", "Galeolaria caespitosa", "Pseudocentrotus depressus", "Hemicentrotus pulcherrimus"))
+
+# Finding model predictions
+
+final_mod = lmer(logMR ~ 1 +
+                 logConc +
+                + (1|Species), 
+               data = RepSpecies)
+
+summary(final_mod)
+
+anova(final_mod)
+
+visreg(final_mod,"logConc", by = "Species")
+
+pred <- predict(final_mod,interval = "confidence", level = 0.95) ###Finding the lines that the model predicts
+
+RepSpecies<- cbind(RepSpecies, pred) ###Add to dataset
+
+```
+##Figure 3A/B - Isolating ENDOS AND ECTOS to plot
+```{r}
+Endos <- RepSpecies %>%
+  filter(Species %in% c("Meleagris gallopavo", "Homo sapiens", "Ovis aries", "Bos taurus", "Oryctolagus cuniculus"))
+
+Ectos <- RepSpecies %>%
+  filter(Endotherm_Ectotherm == "Ecto")
+
+```
+
+
+##Figure 3A/B - Plotting 
+```{r}
+# Endotherms
+End <- 
+  ggplot(Endos, aes(x = logConc, y = logMR, colour = Species)) +
+  labs(x = expression(paste("Log"[10], " Sperm Concentration " *("sperm " * ml^{-1}))), y = expression(paste("Log"[10], " Ejaculate-level metabolic rate "*(mu*l * " O"[2] * " h"^{-1})))) +
+  scale_color_manual(values = c("darkred", "red3", "orangered3", "indianred", "salmon1")) +
+  theme_classic() +
+  geom_line(aes(y = pred),size = 3.5) +
+  geom_point(aes(x = logConc, y = logMR, group = Species), shape = 17, size = 3.5) +
+  stat_function(fun = function(x) {1*x-6.623}, color = "darkgrey", lwd = 1.5, linetype = "dashed") +
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_text(size=16),
+        axis.text.x  = element_text(vjust=0.5, size=16, colour = "black"), 
+        axis.text.y  = element_text(vjust=0.5, size=16, colour = "black"),
+        legend.position = c(.39, .65),
+        legend.justification = c("right", "bottom"),
+        text=element_text(size=16, colour = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(face = "italic", size = 16)) +
+  xlim(5, 10) +
+  ylim(-0.5, 3) +
+  guides(fill = guide_legend(override.aes = list(linetype = 0)),
+         color = guide_legend(override.aes = list(linetype = 0)))
+
+#Ectotherms
+Ect <- 
+  ggplot(Ectos, aes(x = logConc, y = logMR, colour = Species)) +
+  theme_classic() +
+  geom_line(aes(y = pred),size=3.5) +
+  geom_point(aes(x = logConc, y = logMR, group = Species), size = 3.5) +
+  scale_color_manual(values = c("midnightblue", "steelblue3", "lightsteelblue3")) +
+  stat_function(fun = function(x) {1*x-6.5}, color = "darkgrey", lwd = 1.5, linetype = "dashed", xlim=c(5.5,11)) +
+  theme(axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        axis.text.x  = element_text(vjust=0.5, size=16, colour = "black"), 
+        axis.text.y  = element_text(vjust=0.5, size=16, colour = "black"),
+        legend.position = c(.47, .74),
+        legend.justification = c("right", "bottom"),
+        text=element_text(size=16),
+        legend.title = element_blank(),
+        legend.margin = margin(4, 4),
+        legend.text = element_text(face = "italic", size = 16)) +
+  xlim(5, 10) +
+  ylim(-1.5, 2.5) +
+  labs(colour = "Species") +
+  labs(x = expression(paste("Log"[10], " Sperm Concentration " *("sperm " * ml^{-1}))), y = expression(paste("Log"[10], " Ejaculate-level metabolic rate "*(mu*l * " O"[2] * " h"^{-1})))) +
+  guides(fill = guide_legend(override.aes = list(linetype = 0)),
+         color = guide_legend(override.aes = list(linetype = 0)))
+```
+
+##Figure 3A/B - Stacking plots
+```{r}
+fig1 <- ggarrange(End,Ect, ncol = 1, align = "v") #http://www.sthda.com/english/articles/24-ggpubr-publication-ready-plots/81-ggplot2-easy-way-to-mix-multiple-graphs-on-the-same-page/
+   
+fig1 
+
+```
+## Figure 3A/B- Saving plot into PDF
+```{r}
+pdf("~/Desktop/R Studio/RDE Meta/Output/SpeciesEndoEctoStacked.pdf",
+    width = 8.5, # The width of the plot in inches
+    height = 10.5) # The height of the plot in inches
+   
+fig1 
+
+dev.off() ##THis is necessary to finish off saving the plot as a pdf
+```
+
+Figure 4 | Percent Misestimation of Sperm Metabolism based on the fold change in Reported Sperm Concentration relative to the Actual Sperm Concentration. 
+
+Misestimation.csv METADATA
+
+Column names and descriptions
+- Actual_Conc: actual sperm concentration - sperm concentration (sperm per ml) that metabolism was measured at
+- Stand_Conc: standardised concentration - concentration used to transform the metabolic rate using a standardised sperm concentration 
+- Actual_MR: actual metabolic rate (ul O2 per conc per h) that was measured using the acutal sperm concentration
+- Stand_MR: standardised metabolic rate (ul O2 per conc per h) that was reported in the paper but used a standardised concentration
+- a -  alpha: calculated using equation (2) in main text
+- R - Respiration rate: calculated using equation (1) in main text
+- Mis - misestimation: calculated using equation (3) in main text
+- Percent_mis: Mis * 100
+- Fold_IncDec: Fold change in concentration - calculated using equation (4) in main text
+- LogFold_IncDec: log10(Fold_IncDec)
+
+## Figure 4 - Making plot
+```{r}
+
+# Misestimation data
+
+Misestimation <- read.csv("../Data/Misestimation.csv")
+
+#Changing name 
+Misestimation$Fold <- Misestimation$LogFold_IncDec 
+
+### EQUATION I WANT TO ADD TO PLOT
+my_text3 = grobTree(textGrob(expression(paste("R = aC"^{-0.18})), x=0.8,  y=0.9, hjust=0,
+  gp=gpar(col="black", fontsize=16)))
+
+p <- 
+  Misestimation %>%
+  ggplot(aes(x = Fold, y = Percent_mis)) + 
+  labs(x = expression(paste("Log"[10], " Fold change in concentration")), y = "Misestimation (%)") + 
+  geom_smooth(color = "black", method = NULL, se = FALSE, lwd = 3) +
+  geom_point(color = "blue", size = 4.5) +
+  theme_bw() + # Adjusting background of plot
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    text = element_text(size = 16),
+    axis.text.x  = element_text(vjust=0.5, size=16, colour = "black"), 
+    axis.text.y  = element_text(vjust=0.5, size=16, colour = "black"),
+    panel.background = element_rect(fill = "white", colour = "black", size = 0.5),
+    legend.position = c(.95, .1),
+    legend.justification = c("right", "bottom"),
+    legend.box.just = "right",
+    legend.margin = margin(4, 4, 4, 4),
+    legend.title = element_blank()) +
+  annotation_custom(my_text3) + # Adding equation
+  geom_hline(yintercept = 100, linetype = "dashed", size = 0.75) + geom_vline(xintercept = 0, linetype = "dashed", size = 0.75) #adding dashed lines
+   
+```
+
+## Figure 4 - Saving plot into PDF
+```{r}
+
+pdf("~/Desktop/R Studio/RDE Meta/Output/Misestimation.pdf",
+    width = 8, # The width of the plot in inches
+    height = 6) # The height of the plot in inches 
+
+p 
+
+dev.off() ##THis is necessary to finish off saving the plot as a pdf
+
+```
+
+***Figure 4 was taken into powerpoint to add the arrows and text
+
+Figure 5 | Comparing mean scaling exponents for density-dependent metabolism. 
+
+densitydep_slopes.csv METADATA
+
+Column names and descriptions
+- Type = Classification of Multicellular, unicellular or spermatozoa
+- Ref = reference data was extracted from
+- Slope = slope of the relationship between per-capita metabolic rate and population density
+
+## Figure 5 - Making plot
+```{r}
+
+#Locating File
+densityslopes <- read.csv("../Data/densitydep_slopes.csv")
+
+# specifying the order of the x-axis
+densityslopes$Type = factor(densityslopes$Type, levels = c("Spermatozoa", "Unicellular", "Multicellular"))
+
+# Dot plot
+ estimateplot <- densityslopes %>%
+  filter(Slope > -3) %>% # This estimate is much smaller than the rest so I will remove it (see in text reasoning)
+  ggplot(aes(x = Type, y = Slope, fill= Type)) + 
+  geom_dotplot(binaxis='y', stackdir='center') +
+  stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="pointrange", color="black", size  = 1) +
+  labs(y = expression(paste("Estimate (±SE)"))) +
+  theme_bw() + # Adjusting background of plot
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size=16),
+    axis.text.x  = element_text(vjust=0.5, size=16, colour = "black"), 
+    axis.text.y  = element_text(vjust=0.5, size=16, colour = "black"),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    text=element_text(size=16),
+    legend.position = "none",
+    panel.background = element_blank(),
+    axis.line = element_line()) 
+ 
+```
+## Figure 5 - Making plot into PDF
+```{r}
+
+pdf("~/Desktop/R Studio/RDE Meta/Output/DensityEstimates.pdf",
+    width = 10, # The width of the plot in inches
+    height = 6) # The height of the plot in inches 
+
+estimateplot
+
+dev.off() ##THis is necessary to finish off saving the plot as a pdf
+
+```
+
+
+
+#SUPPLEMENTAL MATERIAL
+
+# ANALYSES (Supplemental material)
+
+Wanted to determine if there was support for including a species x concentration interaction (i.e., random slopes) in our model so we compared models with random slope versus random intercept
+
+Table S2 | Linear mixed effects model for the relationship between sperm metabolic rate and sperm concentration per species.
+
+## Table S2 - Model 1: All species in dataset
+```{r}
+# Model Fitting - CORRELATED (random SLOPES + Intercepts) - random slopes and intercepts for each species
+
+rand_mod <- lmer(LNMR ~ 1 + 
+              LNConc 
+            #+ Endotherm_Ectotherm 
+            + (LNConc|Species), 
+            data = mrdata)
+
+summary(rand_mod)
+
+#Fixed effects:
+#             Estimate Std. Error        df t value Pr(>|t|)    
+#(Intercept) -12.78131    0.95143  14.68321  -13.43 1.20e-09 ***
+#LNConc        0.80114    0.05081  15.82794   15.77 4.25e-11 ***
+
+# Model Fitting - Random INTERCEPTS, fixed slope - fixed slopes for each Species
+
+fixed_mod <- lmer(LNMR ~ 1 + 
+              LNConc 
+            #+ Endotherm_Ectotherm 
+            + (1|Species), 
+            data = mrdata)
+
+summary(fixed_mod)
+
+#Fixed effects:
+#                         Estimate Std. Error        df t value Pr(>|t|)    
+#(Intercept) -12.70397    0.81066 139.81099  -15.67   <2e-16 ***
+#LNConc        0.79598    0.04251 144.70071   18.72   <2e-16 ***
+
+
+# Comparing models
+anova(rand_mod, fixed_mod)
+
+#Models:
+#fixed_mod: LNMR ~ 1 + LNConc + (1 | Species)
+#rand_mod: LNMR ~ 1 + LNConc + (LNConc | Species)
+#          npar    AIC    BIC  logLik deviance  Chisq Df Pr(>Chisq)
+#fixed_mod    4 436.49 448.81 -214.24   428.49                     
+#rand_mod     6 439.33 457.82 -213.66   427.33 1.1587  2     0.5603
+
+```
+## Table S2 - Model 2: Limited dataset - species for which we had multiple measures of concentration
+```{r}
+
+RepSpecies <- mrdata %>%
+  filter(Species %in% c("Meleagris gallopavo", "Gallus gallus ","Homo sapiens", "Ovis aries", "Ovis canadensis ", "Bos taurus", "Oryctolagus cuniculus", "Galeolaria caespitosa", "Pseudocentrotus depressus", "Hemicentrotus pulcherrimus"))
+
+rand_mod <- lmer(LNMR ~ 1 + 
+              LNConc 
+            #+ Endotherm_Ectotherm 
+            + (LNConc|Species), 
+            data = RepSpecies)
+
+summary(rand_mod)
+
+#Fixed effects:
+#                         Estimate Std. Error        df t value Pr(>|t|)    
+#(Intercept) -12.15847    1.68775   9.35592  -7.204 4.14e-05 ***
+#LNConc        0.78662    0.08223  10.33989   9.566 1.85e-06 ***
+
+
+# Model Fitting - Random INTERCEPTS, fixed slope - fixed slopes for each Species
+
+fixed_mod <- lmer(LNMR ~ 1 + 
+              LNConc 
+            #+ Endotherm_Ectotherm 
+            + (1|Species), 
+            data = RepSpecies)
+
+summary(fixed_mod)
+
+#Fixed effects:
+#                         Estimate Std. Error        df t value Pr(>|t|)    
+#(Intercept) -11.92766    1.25440  67.36078  -9.509  4.5e-14 ***
+#LNConc        0.76896    0.06453  70.96385  11.916  < 2e-16 ***
+
+# Comparing models
+anova(rand_mod, fixed_mod)
+
+#Models:
+#fixed_mod: LNMR ~ 1 + LNConc + (1 | Species)
+#rand_mod: LNMR ~ 1 + LNConc + (LNConc | Species)
+#          npar    AIC    BIC  logLik deviance  Chisq Df Pr(>Chisq)
+#fixed_mod    4 226.21 235.98 -109.11   218.21                     
+#rand_mod     6 227.27 241.93 -107.64   215.27 2.9375  2     0.2302
+
+```
+Figure S2 | VO2 as a function of oxygen saturation. 
+
+## Figure S2 - Making plot
+```{r}
+# Reading csv file
+O2conc <- read.csv("../Data/O2Conc.csv")
+
+#Making oxygen precent a factor with levels to make it easier to visualize
+O2conc$Percent = factor(O2conc$Percent, levels = c("60-50", "70-60", "80-70", "90-80","100-90"))
+
+# Making plot
+O2Concplot <- 
+  O2conc %>%
+  ggplot(aes(x = Percent2, y = VO2)) +
+  stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="pointrange", color="darkred", size  = 1) + # adding means + SE 
+  geom_point(size = 2) +
+  labs(y = expression(paste("VO"[2], ( mu*l * " O"[2] * " h"^{-1}))), x = expression(paste("Oxygen saturation (%)"))) +
+  theme_bw() + # Adjusting background of plot
+  theme(
+    axis.title.x = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    axis.text.x  = element_text(vjust=0.5, size=16, colour = "black"), 
+    axis.text.y  = element_text(vjust=0.5, size=16, colour = "black"),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    text=element_text(size=16),
+    panel.background = element_blank(),
+    axis.line = element_line()) +
+    xlim(50,100)
+
+```
+
+## Figure S2 - Saving plot as PDF
+```{r}
+pdf("~/Desktop/R Studio/RDE Meta/Output/GCOxygenSat.pdf",
+    width = 8, # The width of the plot in inches
+    height = 6) # The height of the plot in inches 
+
+O2Concplot
+
+dev.off() ##THis is necessary to finish off saving the plot as a pdf
+
+```
+
+Table S4 | Linear mixed effects model for the relationship between sperm motility (%) and sperm concentration (sperm ml-1). 
+
+RDE_motility.csv Metadata
+
+- Motility_Percent: Percent motility that was recorded at initial activation of sperm
+- Sperm_Conc: Sperm concentration (sperm per ml) that was used during measurements of sperm motility, velocity or both
+- VCL: Curvilinear velocity (micrometers per second)
+- VAP: Average path velocity (micrometers per second)
+- VSL Straight line velocity (micrometers per second)
+- MR.measures.: Does this references have concurrent measures of sperm metabolism (Y/N)?
+- reference_MR: Reference used to extract metabolic rate data
+- Ref_Vel_Mot: Reference used to extract motility data, velocity data or both
+
+## Table S4 - Analysis
+```{r}
+
+# Limiting data to only columns we need
+motility <- read.csv("../Data/RDE_motility.csv")
+
+# transform data
+motility$LNConc <- log(motility$Sperm_Conc) # natural log transform
+
+# simple linear mixed effect model with species as a random effect
+motmod <- lmer(Motility_Percent ~ 1 + 
+                 LNConc 
+               + (1|Species), 
+               data = motility)
+
+summary(motmod)
+
+#Random effects:
+# Groups   Name        Variance Std.Dev.
+# Species  (Intercept) 366.5    19.14   
+# Residual             196.8    14.03   
+#Number of obs: 71, groups:  Species, 31
+
+#Fixed effects:
+#            Estimate Std. Error     df t value Pr(>|t|)  
+#(Intercept)   17.133     25.072 63.553   0.683   0.4969  
+#LNConc         3.092      1.322 64.080   2.339   0.0225 *
+
+anova(motmod)
+
+#Type III Analysis of Variance Table with Satterthwaite's method
+#       Sum Sq Mean Sq NumDF DenDF F value  Pr(>F)  
+#LNConc 1077    1077     1 64.08  5.4722 0.02245 *
+
+```
+
